@@ -37,9 +37,9 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 # --- CONSTANTS ---
 MANIFEST_ID = "org.stremio.auto-arabic-vibe"
 MANIFEST_NAME = "Auto Arabic Vibe"
-# HARDCODED CONFIGURATION URL AS REQUESTED
-CONFIG_URL = "https://auto-arabic-vibe.fly.dev/configure"
-
+# --- CONSTANTS ---
+MANIFEST_ID = "org.stremio.auto-arabic-vibe"
+MANIFEST_NAME = "Auto Arabic Vibe"
 
 # --- HELPER FUNCTIONS ---
 
@@ -55,10 +55,25 @@ def decode_config(config_b64: str) -> dict:
         return {'lang': 'ar', 'android': True}
 
 
-def get_manifest(config: dict = None) -> dict:
-    """Generate Manifest with HARDCODED Configuration URL"""
+def get_base_url():
+    """Determine robust base URL with HTTPS support"""
+    scheme = request.headers.get('X-Forwarded-Proto', request.scheme)
+    host = request.headers.get('Host', request.host)
+    base = f"{scheme}://{host}"
+    # Force HTTPS for cloud deployments
+    if 'railway' in base or 'fly.dev' in base or 'render' in base or 'koyeb' in base:
+        base = base.replace('http://', 'https://')
+    return base
+
+
+def get_manifest(config: dict = None, config_url: str = None) -> dict:
+    """Generate Manifest"""
     if config is None:
         config = {'lang': 'ar', 'android': True}
+    
+    # Default to dynamic if not provided (fallback)
+    if not config_url:
+        config_url = f"{get_base_url()}/configure"
         
     return {
         "id": MANIFEST_ID,
@@ -74,7 +89,7 @@ def get_manifest(config: dict = None) -> dict:
         "behaviorHints": {
             "configurable": True,
             "configurationRequired": False,
-            "configurationLocation": CONFIG_URL
+            "configurationLocation": config_url
         }
     }
 
@@ -121,14 +136,16 @@ def configure_page():
 @app.route('/manifest.json')
 def manifest_base():
     """Base Manifest"""
-    return jsonify(get_manifest())
+    config_url = f"{get_base_url()}/configure"
+    return jsonify(get_manifest(config_url=config_url))
 
 
 @app.route('/<config>/manifest.json')
 def manifest_dynamic(config):
     """Dynamic Manifest"""
     cfg = decode_config(config)
-    return jsonify(get_manifest(cfg))
+    config_url = f"{get_base_url()}/configure"
+    return jsonify(get_manifest(cfg, config_url=config_url))
 
 
 @app.route('/subtitles/<type>/<id>.json')
