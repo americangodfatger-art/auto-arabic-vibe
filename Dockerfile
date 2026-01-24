@@ -12,8 +12,8 @@ RUN pip install --no-cache-dir gunicorn
 # Copy application code
 COPY . .
 
-# Expose port
-EXPOSE 8080
+# Default port if not set
+ENV PORT=8080
 
-# Run with gunicorn
-CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "2", "--timeout", "120", "app:app"]
+# Run with gunicorn using shell-form CMD to expand PORT variable
+CMD sh -c "gunicorn --bind 0.0.0.0:${PORT} --workers 2 --timeout 120 app:app"
