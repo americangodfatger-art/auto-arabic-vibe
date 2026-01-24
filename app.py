@@ -37,7 +37,7 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 # --- CONSTANTS ---
 MANIFEST_ID = "org.stremio.auto-arabic-vibe"
 MANIFEST_NAME = "Auto Arabic Vibe"
-MANIFEST_VERSION = "1.4.0"
+MANIFEST_VERSION = "1.4.1"
 
 # Language code mapping (2-letter to 3-letter ISO 639-2)
 LANG_MAP = {
@@ -99,7 +99,8 @@ def get_manifest(config: dict = None) -> dict:
         "idPrefixes": ["tt"],
         "behaviorHints": {
             "configurable": True,
-            "configurationRequired": False
+            "configurationRequired": False,
+            "configurationLocation": f"{get_base_url()}/configure"
         }
     }
 
@@ -179,7 +180,15 @@ def subtitles_handler(config, content_type, id):
     """
     print(f"[INFO] /subtitles called: type={content_type}, id={id}, config={config}")
     
-    response_subs = []
+    # Persistent status subtitle for verification
+    status_sub = {
+        "id": "aav-status",
+        "url": "data:application/x-subrip;base64,MQowMDowMDowMSwwMDAgLS0+IDAwOjAwOjA1LDAwMAo2XG5cdTI3MDUgQWRkb24gU3RhdHVzOiBBY3RpdmVcbgoK",
+        "lang": "ara",
+        "name": "✅ Addon Status: Active"
+    }
+    
+    response_subs = [status_sub]
 
     try:
         # Decode config
