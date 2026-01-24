@@ -77,9 +77,9 @@ def get_manifest(config: dict = None, config_url: str = None) -> dict:
         
     return {
         "id": MANIFEST_ID,
-        "version": "1.2.0",
+        "version": "1.3.0",
         "name": MANIFEST_NAME,
-        "description": "Auto-translates subtitles to Arabic. Android TV Compatible.",
+        "description": "Auto Arabic Vibe - DEBUG BUILD",
         "logo": "https://i.imgur.com/QJmP3GF.png",
         "background": "https://i.imgur.com/Ke5D6l3.jpg",
         "resources": ["subtitles"],
@@ -97,9 +97,6 @@ def get_manifest(config: dict = None, config_url: str = None) -> dict:
 def create_response(content: str, is_error: bool = False) -> Response:
     """
     Create a Robust Response for Android TV
-    - Content-Type: application/x-subrip
-    - Encoding: UTF-8 with BOM
-    - CORS: *
     """
     if not content:
         content = "1\n00:00:01,000 --> 00:00:05,000\nNo content available.\n\n"
@@ -126,16 +123,14 @@ def create_response(content: str, is_error: bool = False) -> Response:
 @app.route('/')
 @app.route('/configure')
 def configure_page():
-    """
-    CRITICAL: Display Configuration Page
-    Must work on TV and Mobile.
-    """
+    print("[DEBUG] /configure called")
     return render_template('index.html')
 
 
 @app.route('/manifest.json')
 def manifest_base():
     """Base Manifest"""
+    print("[DEBUG] /manifest.json called")
     config_url = f"{get_base_url()}/configure"
     return jsonify(get_manifest(config_url=config_url))
 
@@ -143,6 +138,7 @@ def manifest_base():
 @app.route('/<config>/manifest.json')
 def manifest_dynamic(config):
     """Dynamic Manifest"""
+    print(f"[DEBUG] /manifest.json called with config={config}")
     cfg = decode_config(config)
     config_url = f"{get_base_url()}/configure"
     return jsonify(get_manifest(cfg, config_url=config_url))
@@ -157,17 +153,21 @@ def subtitles_base(type, id):
 @app.route('/<config>/subtitles/<type>/<id>.json')
 def subtitles_dynamic(config, type, id):
     """
-    CRITICAL: Subtitle Handler
-    MUST NEVER FAIL. RETURNS FALLBACKS ON ERROR.
+    CRITICAL: Subtitle Handler (DEBUG Mode)
     """
-    
-    # 1. Always start with the Debug Subtitle
-    subs_list = [{
-        "id": "debug_active",
-        "url": "data:application/x-subrip;base64,MQowMDowMDowMSwwMDAgLS0+IDAwOjAwOjEwLDAwMApbRGVidWddIEFkZG9uIEFjdGl2ZQpDb25maWd1cmVkIFN1Y2Nlc3NmdWxseQoK",
+    print(f"[DEBUG] /subtitles called with type={type}, id={id}, config={config}")
+
+    # FORCE VISIBILITY TEST SUBTITLE
+    test_sub = {
+        "id": "debug_visible",
+        "url": "https://raw.githubusercontent.com/MZaFaRM/subtitles/master/test.srt",
         "lang": "ara",
-        "name": "⚙️ [Debug] Addon Active"
-    }]
+        "langISO": "ara",  # Stremio legacy
+        "name": "[DEBUG] Addon Active (Test)" # Visible text
+    }
+    
+    # Minimal response format
+    response_subs = [test_sub]
 
     try:
         # Decode config
@@ -175,7 +175,7 @@ def subtitles_dynamic(config, type, id):
         lang = cfg.get('lang', 'ar')
         
         # Parse ID safely
-        real_id = id.split(':')[0] # simple split to get tt12345
+        real_id = id.split(':')[0]
         season = None
         episode = None
         
@@ -183,42 +183,38 @@ def subtitles_dynamic(config, type, id):
         if len(parts) >= 2: season = int(parts[1])
         if len(parts) >= 3: episode = int(parts[2])
 
-        print(f"[REQ] {real_id} S{season}E{episode} -> {lang}")
+        print(f"[DEBUG] Processing subtitles for {real_id} S{season}E{episode} -> {lang}")
 
         # Fetch English Subtitle
         if SOURCES_AVAILABLE and source_manager:
             english_srt = source_manager.get_first_subtitle(real_id, type, season, episode)
         else:
             english_srt = None
+            print("[DEBUG] Sources unavailable")
 
         if not english_srt:
-            # Add a "Not Found" subtitle so user knows we tried
-            subs_list.append({
-                "id": "not_found",
-                "url": "data:application/x-subrip;base64,MQowMDowMDowMSwwMDAgLS0+IDAwOjAwOjA1LDAwMApNo English Subtitles Found\n\n",
-                "lang": "ara",
-                "name": "❌ No English Source Found"
-            })
-            return jsonify({"subtitles": subs_list})
+            print("[DEBUG] No english subtitles found")
+            # Only return test sub if no english found
+            return jsonify({"subtitles": response_subs})
 
         # Generate URL for translation
         host = request.host_url.rstrip('/')
         subtitle_url = f"{host}/{config}/stream/{type}/{id}/sub.srt" if config else f"{host}/stream/{type}/{id}/sub.srt"
 
-        subs_list.append({
+        response_subs.append({
             "id": f"auto_{lang}_{real_id}",
             "url": subtitle_url,
-            "lang": "ara", # Stremio expects 3-letter ISO code
-            "name": "🇸🇦 Arabic (Auto-Translate)"
+            "lang": "ara",
+            "name": f"🇸🇦 Arabic (Auto-Translate)"
         })
 
-        return jsonify({"subtitles": subs_list})
+        return jsonify({"subtitles": response_subs})
 
     except Exception as e:
         print(f"[ERROR] Subtitle Logic Failed: {e}")
         traceback.print_exc()
-        # Return what we have (at least the debug sub)
-        return jsonify({"subtitles": subs_list})
+        # ALWAYS RETURN TEST SUB
+        return jsonify({"subtitles": response_subs})
 
 
 @app.route('/stream/<type>/<id>/sub.srt')
@@ -226,8 +222,8 @@ def subtitles_dynamic(config, type, id):
 def stream_subtitle(type, id, config=None):
     """
     CRITICAL: Stream the content.
-    Fail-safe: Returns English if translation breaks.
     """
+    print(f"[DEBUG] /stream called for {type} {id}")
     try:
         cfg = decode_config(config)
         lang = cfg.get('lang', 'ar')
