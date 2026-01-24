@@ -86,11 +86,14 @@ def get_manifest(config: dict = None) -> dict:
         'ja': 'Japanese', 'ko': 'Korean', 'zh-CN': 'Chinese'
     }.get(lang, lang.upper())
     
+    import time
+    timestamp = int(time.time())
+    
     return {
         "id": MANIFEST_ID,
         "version": MANIFEST_VERSION,
         "name": f"{MANIFEST_NAME} ({lang_name})",
-        "description": f"Auto-translate English subtitles to {lang_name}. Works on Android TV, Fire TV, and all Stremio clients.",
+        "description": f"Auto-translate English subtitles to {lang_name} (Build: {timestamp}). Works on Android TV and all Stremio clients.",
         "logo": "https://i.imgur.com/QJmP3GF.png",
         "background": "https://i.imgur.com/Ke5D6l3.jpg",
         "resources": ["subtitles"],
@@ -183,7 +186,7 @@ def subtitles_handler(config, content_type, id):
     # Persistent status subtitle for verification
     status_sub = {
         "id": "aav-status",
-        "url": "data:application/x-subrip;base64,MQowMDowMDowMSwwMDAgLS0+IDAwOjAwOjA1LDAwMAo2XG5cdTI3MDUgQWRkb24gU3RhdHVzOiBBY3RpdmVcbgoK",
+        "url": f"{get_base_url()}/health/status.srt",
         "lang": "ara",
         "name": "✅ Addon Status: Active"
     }
@@ -328,6 +331,13 @@ def stream_subtitle_handler(config, content_type, id):
         print(f"[ERROR] Stream handler failed: {e}")
         traceback.print_exc()
         return create_response(f"Error: {e}", is_error=True)
+
+@app.route('/health/status.srt')
+def status_subtitle_stream():
+    """Returns a hardcoded 'Active' subtitle file"""
+    content = "1\n00:00:01,000 --> 00:00:10,000\n✅ Addon Status: Active\n\n"
+    return create_response(content)
+
 
 # --- HEALTH CHECK ---
 @app.route('/health')
