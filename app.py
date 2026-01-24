@@ -3,17 +3,39 @@ Auto Arabic Vibe - Stremio Addon
 Python Flask server with Android TV Compatibility Mode
 33 Subtitle Sources with Arabic Translation
 With Configuration Page and Dynamic Routing
+
+FIXES APPLIED:
+1. Added /configure route alias
+2. Test subtitle always returned first
+3. Better ID parsing (strips :season:episode)
+4. Enhanced logging throughout
+5. Fallback to English on translation failure
+6. Robust error handling
 """
 
 import os
 import json
 import re
 import base64
+import traceback
 from flask import Flask, Response, request, jsonify, make_response, render_template
 from flask_cors import CORS
 
-from sources import source_manager
-from translator import translate_srt_content, batch_translate_srt
+# Import with error handling
+try:
+    from sources import source_manager
+    SOURCES_AVAILABLE = True
+except Exception as e:
+    print(f"[STARTUP ERROR] Failed to import sources: {e}")
+    SOURCES_AVAILABLE = False
+    source_manager = None
+
+try:
+    from translator import translate_srt_content, batch_translate_srt
+    TRANSLATOR_AVAILABLE = True
+except Exception as e:
+    print(f"[STARTUP ERROR] Failed to import translator: {e}")
+    TRANSLATOR_AVAILABLE = False
 
 app = Flask(__name__)
 
@@ -27,8 +49,22 @@ CORS(app,
 
 # Load base manifest
 MANIFEST_PATH = os.path.join(os.path.dirname(__file__), 'manifest.json')
-with open(MANIFEST_PATH, 'r', encoding='utf-8') as f:
-    BASE_MANIFEST = json.load(f)
+try:
+    with open(MANIFEST_PATH, 'r', encoding='utf-8') as f:
+        BASE_MANIFEST = json.load(f)
+except Exception as e:
+    print(f"[STARTUP ERROR] Failed to load manifest: {e}")
+    BASE_MANIFEST = {
+        "id": "org.stremio.auto-arabic-vibe",
+        "version": "1.0.0",
+        "name": "Auto Arabic Vibe",
+        "description": "Auto translate subtitles",
+        "resources": ["subtitles"],
+        "types": ["movie", "series"],
+        "catalogs": [],
+        "idPrefixes": ["tt"],
+        "behaviorHints": {"configurable": True, "configurationRequired": False}
+    }
 
 # Cache for translated subtitles (in-memory, stateless per restart)
 subtitle_cache = {}
@@ -57,15 +93,36 @@ LANGUAGE_NAMES = {
 }
 
 
+def parse_video_id(content_id: str) -> tuple:
+    """
+    Parse Stremio video ID to extract IMDB ID, season, and episode
+    
+    Input formats:
+    - tt12345
+    - tt12345:1:1
+    - tt12345:1:1.json
+    
+    Returns:
+        (imdb_id, season, episode)
+    """
+    # Remove .json suffix if present
+    clean_id = content_id.replace('.json', '').strip()
+    
+    # Split by colon
+    parts = clean_id.split(':')
+    
+    imdb_id = parts[0] if parts else clean_id
+    season = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+    episode = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else None
+    
+    print(f"[ID Parser] Input: '{content_id}' -> IMDB: '{imdb_id}', Season: {season}, Episode: {episode}")
+    
+    return imdb_id, season, episode
+
+
 def decode_config(config_b64: str) -> dict:
     """
     Decode Base64 config string to dictionary
-    
-    Args:
-        config_b64: Base64 encoded config JSON
-    
-    Returns:
-        Config dictionary with defaults
     """
     default_config = {'lang': 'ar', 'android': True}
     
@@ -109,13 +166,6 @@ def get_manifest_for_config(config: dict) -> dict:
 def validate_srt(content: str) -> str:
     """
     Validate and fix SRT format for Android compatibility
-    Ensures proper structure with blank lines between blocks
-    
-    Args:
-        content: Raw SRT content
-    
-    Returns:
-        Fixed SRT content
     """
     if not content:
         return ""
@@ -132,66 +182,41 @@ def validate_srt(content: str) -> str:
         if len(lines) < 3:
             continue
         
-        # Validate block structure
         try:
-            # First line should be a number (index)
             index = lines[0].strip()
             if not index.isdigit():
-                # Try to fix by adding index
                 index = str(len(valid_blocks) + 1)
             
-            # Second line should be timestamp
             timestamp = lines[1].strip()
             if '-->' not in timestamp:
-                continue  # Invalid block, skip
+                continue
             
-            # Text lines
             text = '\n'.join(lines[2:]).strip()
             if not text:
-                continue  # Empty text, skip
+                continue
             
-            # Rebuild valid block
             valid_blocks.append(f"{len(valid_blocks) + 1}\n{timestamp}\n{text}")
         
         except Exception:
             continue
     
-    # Join with exactly one blank line between blocks
     return '\n\n'.join(valid_blocks) + '\n'
 
 
 def create_subtitle_response(content: str, format_type: str = 'srt', android_mode: bool = True) -> Response:
     """
-    Create response with optional Android TV Compatibility Mode
-    
-    When android_mode is True:
-    1. Strict MIME Type: application/x-subrip for SRT
-    2. Direct Stream: Return actual content, not redirect
-    3. Encoding: Force UTF-8 with BOM for Arabic/RTL characters
-    4. CORS headers for Stremio
-    
-    Args:
-        content: Subtitle content
-        format_type: 'srt' or 'vtt'
-        android_mode: Enable Android TV compatibility (strict MIME, UTF-8 BOM)
-    
-    Returns:
-        Flask Response with proper headers
+    Create response with Android TV Compatibility Mode
     """
-    # Validate SRT format if android mode
     if android_mode:
         validated_content = validate_srt(content)
-        # Encode as UTF-8 with BOM for better Arabic/RTL support
         encoded_content = validated_content.encode('utf-8-sig')
     else:
         validated_content = content
         encoded_content = validated_content.encode('utf-8')
     
-    # Set MIME type based on format and mode
     if format_type == 'vtt':
         mime_type = 'text/vtt; charset=utf-8'
     elif android_mode:
-        # CRITICAL: Use application/x-subrip for Android TV compatibility
         mime_type = 'application/x-subrip; charset=utf-8'
     else:
         mime_type = 'text/plain; charset=utf-8'
@@ -202,7 +227,6 @@ def create_subtitle_response(content: str, format_type: str = 'srt', android_mod
         mimetype=mime_type
     )
     
-    # Set headers
     response.headers['Content-Type'] = mime_type
     response.headers['Content-Disposition'] = 'inline; filename="subtitle.srt"'
     response.headers['Access-Control-Allow-Origin'] = '*'
@@ -216,15 +240,38 @@ def create_subtitle_response(content: str, format_type: str = 'srt', android_mod
     return response
 
 
+def get_test_subtitle() -> dict:
+    """
+    Return a test subtitle to verify addon connectivity
+    """
+    return {
+        "id": "test-connection-ok",
+        "url": "data:application/x-subrip;base64,MQowMDowMDowMSwwMDAgLS0+IDAwOjAwOjA1LDAwMApbVGVzdF0gQXV0by1BcmFiaWMgQ29ubmVjdGlvbiBPSy4KQ29ubmVjdGVkIFN1Y2Nlc3NmdWxseSEKCg==",
+        "lang": "ara",
+        "name": "✅ [Test] Auto-Arabic Connection OK"
+    }
+
+
+# ============== ROUTES ==============
+
 @app.route('/')
 def index():
     """Configuration page - modern HTML landing page"""
+    print("[Route] / - Serving config page")
+    return render_template('index.html')
+
+
+@app.route('/configure')
+def configure():
+    """Alias for configuration page (for Stremio TV Configure button)"""
+    print("[Route] /configure - Serving config page")
     return render_template('index.html')
 
 
 @app.route('/manifest.json')
 def manifest_default():
     """Default manifest (Arabic, Android mode on)"""
+    print("[Route] /manifest.json - Serving default manifest")
     config = {'lang': 'ar', 'android': True}
     manifest = get_manifest_for_config(config)
     response = jsonify(manifest)
@@ -236,7 +283,7 @@ def manifest_default():
 def manifest_with_config(config_b64: str):
     """Dynamic manifest with user config"""
     config = decode_config(config_b64)
-    print(f"[Manifest] Config: {config}")
+    print(f"[Route] /{config_b64}/manifest.json - Config: {config}")
     manifest = get_manifest_for_config(config)
     response = jsonify(manifest)
     response.headers['Access-Control-Allow-Origin'] = '*'
@@ -246,6 +293,7 @@ def manifest_with_config(config_b64: str):
 @app.route('/subtitles/<content_type>/<content_id>.json')
 def subtitles_handler(content_type: str, content_id: str):
     """Default subtitle handler (Arabic, Android mode on)"""
+    print(f"[Route] /subtitles/{content_type}/{content_id}.json")
     return subtitles_with_config('', content_type, content_id)
 
 
@@ -253,36 +301,34 @@ def subtitles_handler(content_type: str, content_id: str):
 def subtitles_with_config(config_b64: str, content_type: str, content_id: str):
     """
     Config-aware subtitle handler
-    
-    URL format: /{config}/subtitles/{type}/{id}.json
+    Returns list of available subtitles including a TEST subtitle
     """
     config = decode_config(config_b64) if config_b64 else {'lang': 'ar', 'android': True}
     lang_code = config.get('lang', 'ar')
     
+    # LOGGING: Request received
+    print(f"=" * 60)
     print(f"[Subtitle Request] Type: {content_type}, ID: {content_id}, Lang: {lang_code}")
     
     try:
-        # Parse content ID
-        parts = content_id.replace('.json', '').split(':')
-        imdb_id = parts[0]
+        # Parse content ID properly
+        imdb_id, season, episode = parse_video_id(content_id)
         
-        # Generate subtitle URL that points to our direct stream endpoint
+        # Generate subtitle URL
         base_url = request.host_url.rstrip('/')
         
-        # Include config in the subtitle URL
         if config_b64:
             subtitle_url = f"{base_url}/{config_b64}/subtitle/{content_type}/{content_id}/translated.srt"
         else:
             subtitle_url = f"{base_url}/subtitle/{content_type}/{content_id}/arabic.srt"
         
-        # Get language name for display
+        # Get language info
         lang_name = 'Arabic'
         lang_flag = '🇸🇦'
         lang_iso = 'ara'
         
         if lang_code in LANGUAGE_NAMES:
             lang_name, lang_native, lang_iso = LANGUAGE_NAMES[lang_code]
-            # Map language codes to flags
             flag_map = {
                 'ar': '🇸🇦', 'tr': '🇹🇷', 'fa': '🇮🇷', 'ur': '🇵🇰', 'hi': '🇮🇳',
                 'bn': '🇧🇩', 'id': '🇮🇩', 'ms': '🇲🇾', 'th': '🇹🇭', 'vi': '🇻🇳',
@@ -291,20 +337,31 @@ def subtitles_with_config(config_b64: str, content_type: str, content_id: str):
             }
             lang_flag = flag_map.get(lang_code, '🌍')
         
-        subtitles = [{
-            "id": f"auto-{lang_code}-{imdb_id}",
-            "url": subtitle_url,
-            "lang": lang_iso,
-            "name": f"{lang_flag} {lang_name} (Auto-Translated)"
-        }]
+        # Build subtitles list - TEST SUBTITLE FIRST
+        subtitles = [
+            get_test_subtitle(),  # Always include test subtitle
+            {
+                "id": f"auto-{lang_code}-{imdb_id}",
+                "url": subtitle_url,
+                "lang": lang_iso,
+                "name": f"{lang_flag} {lang_name} (Auto-Translated)"
+            }
+        ]
+        
+        # LOGGING: Found subtitles
+        print(f"[Subtitle Response] Found {len(subtitles)} subtitles")
+        print(f"=" * 60)
         
         response = jsonify({"subtitles": subtitles})
         response.headers['Access-Control-Allow-Origin'] = '*'
         return response
     
     except Exception as e:
-        print(f"[Error] Subtitle handler: {e}")
-        response = jsonify({"subtitles": []})
+        print(f"[ERROR] Subtitle handler: {e}")
+        traceback.print_exc()
+        
+        # Return test subtitle even on error
+        response = jsonify({"subtitles": [get_test_subtitle()]})
         response.headers['Access-Control-Allow-Origin'] = '*'
         return response
 
@@ -312,6 +369,7 @@ def subtitles_with_config(config_b64: str, content_type: str, content_id: str):
 @app.route('/subtitle/<content_type>/<content_id>/arabic.srt')
 def serve_translated_subtitle(content_type: str, content_id: str):
     """Default subtitle streaming (Arabic, Android mode on)"""
+    print(f"[Route] /subtitle/{content_type}/{content_id}/arabic.srt")
     return serve_translated_with_config('', content_type, content_id)
 
 
@@ -319,73 +377,110 @@ def serve_translated_subtitle(content_type: str, content_id: str):
 def serve_translated_with_config(config_b64: str, content_type: str, content_id: str):
     """
     Config-aware subtitle streaming
-    
-    CRITICAL: This is the "Direct Stream" endpoint
-    Returns actual subtitle content (not a redirect) with proper headers
+    Returns actual subtitle content with fallback to English
     """
     config = decode_config(config_b64) if config_b64 else {'lang': 'ar', 'android': True}
     lang_code = config.get('lang', 'ar')
     android_mode = config.get('android', True)
     
-    print(f"[Translate Request] Type: {content_type}, ID: {content_id}, Lang: {lang_code}, Android: {android_mode}")
+    print(f"=" * 60)
+    print(f"[Translate Request] Type: {content_type}, ID: {content_id}")
+    print(f"[Translate Request] Lang: {lang_code}, Android: {android_mode}")
     
     try:
         # Parse content ID
-        parts = content_id.replace('.json', '').split(':')
-        imdb_id = parts[0]
-        season = int(parts[1]) if len(parts) > 1 else None
-        episode = int(parts[2]) if len(parts) > 2 else None
+        imdb_id, season, episode = parse_video_id(content_id)
         
         cache_key = f"{imdb_id}:{lang_code}:{season}:{episode}"
         
-        # Check cache
+        # Check cache first
         if cache_key in subtitle_cache:
             print(f"[Cache Hit] {cache_key}")
             return create_subtitle_response(subtitle_cache[cache_key], android_mode=android_mode)
         
-        # Fetch English subtitle from 33 sources
-        print(f"[Fetching] Searching 33 sources for {imdb_id}...")
+        # Check if sources are available
+        if not SOURCES_AVAILABLE or source_manager is None:
+            print(f"[ERROR] Sources not available!")
+            error_srt = f"1\n00:00:01,000 --> 00:00:05,000\nSubtitle sources not available.\nPlease check server logs.\n\n"
+            return create_subtitle_response(error_srt, android_mode=android_mode)
         
-        english_srt = source_manager.get_first_subtitle(imdb_id, content_type, season, episode)
+        # Fetch English subtitle from 33 sources
+        print(f"[Fetching] Searching sources for {imdb_id}...")
+        
+        english_srt = None
+        try:
+            english_srt = source_manager.get_first_subtitle(imdb_id, content_type, season, episode)
+        except Exception as e:
+            print(f"[ERROR] Source manager failed: {e}")
+            traceback.print_exc()
         
         if not english_srt:
-            print(f"[Error] No English subtitles found for {imdb_id}")
-            return create_subtitle_response("1\n00:00:01,000 --> 00:00:05,000\nNo subtitles available for translation.\n\n", android_mode=android_mode)
+            print(f"[Warning] No English subtitles found for {imdb_id}")
+            error_srt = f"1\n00:00:01,000 --> 00:00:05,000\nNo English subtitles found for translation.\nIMDB: {imdb_id}\n\n"
+            return create_subtitle_response(error_srt, android_mode=android_mode)
         
-        # Translate to target language
-        lang_name = LANGUAGE_NAMES.get(lang_code, ('Unknown', '', 'und'))[0]
-        print(f"[Translating] {len(english_srt)} characters to {lang_name}...")
-        translated_srt = translate_srt_content(english_srt, lang_code)
+        print(f"[Found] English subtitle: {len(english_srt)} characters")
         
+        # Try to translate
+        translated_srt = None
+        
+        if TRANSLATOR_AVAILABLE:
+            try:
+                lang_name = LANGUAGE_NAMES.get(lang_code, ('Unknown', '', 'und'))[0]
+                print(f"[Translating] To {lang_name}...")
+                translated_srt = translate_srt_content(english_srt, lang_code)
+                
+                if translated_srt:
+                    print(f"[Success] Translation complete: {len(translated_srt)} characters")
+            except Exception as e:
+                print(f"[ERROR] Translation failed: {e}")
+                traceback.print_exc()
+        else:
+            print(f"[Warning] Translator not available")
+        
+        # FALLBACK: Return English if translation failed
         if not translated_srt:
-            print(f"[Error] Translation failed for {imdb_id}")
-            return create_subtitle_response("1\n00:00:01,000 --> 00:00:05,000\nTranslation failed. Please try again.\n\n", android_mode=android_mode)
+            print(f"[Fallback] Returning English subtitle as fallback")
+            translated_srt = english_srt
         
         # Cache the result
         subtitle_cache[cache_key] = translated_srt
-        print(f"[Success] Translated and cached {cache_key}")
+        print(f"[Cached] {cache_key}")
+        print(f"=" * 60)
         
         return create_subtitle_response(translated_srt, android_mode=android_mode)
     
     except Exception as e:
-        print(f"[Error] Translation endpoint: {e}")
-        import traceback
+        print(f"[CRITICAL ERROR] {e}")
         traceback.print_exc()
-        return create_subtitle_response(f"1\n00:00:01,000 --> 00:00:05,000\nError: {str(e)}\n\n", android_mode=android_mode)
+        error_srt = f"1\n00:00:01,000 --> 00:00:05,000\nError: {str(e)}\n\n"
+        return create_subtitle_response(error_srt, android_mode=android_mode)
 
 
 @app.route('/health')
 def health():
-    """Health check endpoint"""
-    return jsonify({"status": "healthy", "addon": "Auto Arabic Vibe", "sources": 33})
+    """Health check endpoint with diagnostics"""
+    print("[Route] /health")
+    return jsonify({
+        "status": "healthy",
+        "addon": "Auto Arabic Vibe",
+        "version": "1.1.0",
+        "sources_available": SOURCES_AVAILABLE,
+        "translator_available": TRANSLATOR_AVAILABLE,
+        "cache_size": len(subtitle_cache)
+    })
 
 
-# Handle OPTIONS preflight requests explicitly
+# Handle OPTIONS preflight requests
 @app.route('/', methods=['OPTIONS'])
+@app.route('/configure', methods=['OPTIONS'])
 @app.route('/manifest.json', methods=['OPTIONS'])
 @app.route('/subtitles/<path:path>', methods=['OPTIONS'])
 @app.route('/subtitle/<path:path>', methods=['OPTIONS'])
-def options_handler(path=None):
+@app.route('/<config>/manifest.json', methods=['OPTIONS'])
+@app.route('/<config>/subtitles/<path:path>', methods=['OPTIONS'])
+@app.route('/<config>/subtitle/<path:path>', methods=['OPTIONS'])
+def options_handler(config=None, path=None):
     """Handle CORS preflight requests"""
     response = make_response()
     response.headers['Access-Control-Allow-Origin'] = '*'
@@ -411,20 +506,17 @@ if __name__ == '__main__':
     print(f"""
 ╔══════════════════════════════════════════════════════════════╗
 ║                                                              ║
-║   🇸🇦  Auto Arabic Vibe - Stremio Addon                      ║
+║   🇸🇦  Auto Arabic Vibe - Stremio Addon v1.1.0               ║
 ║                                                              ║
 ║   Server running at: http://localhost:{port}                    ║
 ║   Manifest URL: http://localhost:{port}/manifest.json           ║
+║   Config Page: http://localhost:{port}/configure                ║
 ║                                                              ║
+║   ✅ Sources Available: {str(SOURCES_AVAILABLE):5}                          ║
+║   ✅ Translator Available: {str(TRANSLATOR_AVAILABLE):5}                       ║
 ║   ✅ Android TV Compatibility Mode ENABLED                   ║
-║   ✅ Direct Stream (no redirects)                            ║
-║   ✅ UTF-8 Encoding for Arabic                               ║
-║   ✅ Strict MIME Type (application/x-subrip)                 ║
-║                                                              ║
-║   To install in Stremio:                                     ║
-║   1. Open Stremio                                            ║
-║   2. Go to Addons                                            ║
-║   3. Enter the manifest URL above                            ║
+║   ✅ Test Subtitle ENABLED                                   ║
+║   ✅ Fallback to English ENABLED                             ║
 ║                                                              ║
 ╚══════════════════════════════════════════════════════════════╝
     """)
