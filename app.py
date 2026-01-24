@@ -63,7 +63,11 @@ except Exception as e:
         "types": ["movie", "series"],
         "catalogs": [],
         "idPrefixes": ["tt"],
-        "behaviorHints": {"configurable": True, "configurationRequired": False}
+        "behaviorHints": {
+            "configurable": True, 
+            "configurationRequired": False,
+            "configurationLocation": "https://auto-arabic-vibe.fly.dev/configure"
+        }
     }
 
 # Cache for translated subtitles (in-memory, stateless per restart)
@@ -150,7 +154,8 @@ def get_manifest_for_config(config: dict) -> dict:
     # Update behavior hints to show it's configurable
     manifest['behaviorHints'] = {
         'configurable': True,
-        'configurationRequired': False
+        'configurationRequired': False,
+        'configurationLocation': "https://auto-arabic-vibe.fly.dev/configure"
     }
     
     # Update name based on language
