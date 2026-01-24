@@ -1,8 +1,8 @@
 {
     "id": "org.stremio.auto-arabic-vibe",
-    "version": "1.1.0",
-    "name": "Auto Arabic Vibe - ترجمة عربية تلقائية",
-    "description": "Automatically translates English subtitles to Arabic on-the-fly. Optimized for Android TV compatibility.",
+    "version": "1.4.0",
+    "name": "Auto Arabic Vibe (Arabic)",
+    "description": "Auto-translate English subtitles to Arabic. Works on Android TV, Fire TV, and all Stremio clients.",
     "logo": "https://i.imgur.com/QJmP3GF.png",
     "background": "https://i.imgur.com/Ke5D6l3.jpg",
     "resources": [
