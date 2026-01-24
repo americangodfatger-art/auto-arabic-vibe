@@ -209,6 +209,13 @@ def subtitles_handler(config, content_type, id):
             print(f"[WARN] Invalid IMDB ID format: {real_id}")
             return make_subtitle_response([])
 
+        # Build the subtitle URL - use base URL for proper HTTPS
+        base_url = get_base_url()
+        if config:
+            subtitle_url = f"{base_url}/{config}/stream/{content_type}/{id}/sub.srt"
+        else:
+            subtitle_url = f"{base_url}/stream/{content_type}/{id}/sub.srt"
+
         # Fetch English subtitles from sources
         english_srt = None
         if SOURCES_AVAILABLE and source_manager:
@@ -221,38 +228,31 @@ def subtitles_handler(config, content_type, id):
 
         if not english_srt:
             print(f"[INFO] No English subtitles found for {real_id}")
+            # Return empty - no subtitle available
             return make_subtitle_response([])
 
         print(f"[INFO] Found English subtitle ({len(english_srt)} chars)")
 
-        # Build the subtitle URL - use base URL for proper HTTPS
-        base_url = get_base_url()
-        if config:
-            subtitle_url = f"{base_url}/{config}/stream/{content_type}/{id}/sub.srt"
-        else:
-            subtitle_url = f"{base_url}/stream/{content_type}/{id}/sub.srt"
-
-        # Language display names
+        # Language display names with flags
         lang_names = {
-            'ar': ('Arabic', '🇸🇦 العربية'),
-            'tr': ('Turkish', '🇹🇷 Türkçe'),
-            'fa': ('Persian', '🇮🇷 فارسی'),
-            'ur': ('Urdu', '🇵🇰 اردو'),
-            'hi': ('Hindi', '🇮🇳 हिन्दी'),
-            'fr': ('French', '🇫🇷 Français'),
-            'es': ('Spanish', '🇪🇸 Español'),
-            'de': ('German', '🇩🇪 Deutsch'),
-            'ru': ('Russian', '🇷🇺 Русский'),
+            'ar': 'Arabic',
+            'tr': 'Turkish', 
+            'fa': 'Persian',
+            'ur': 'Urdu',
+            'hi': 'Hindi',
+            'fr': 'French',
+            'es': 'Spanish',
+            'de': 'German',
+            'ru': 'Russian',
         }
-        lang_display = lang_names.get(lang, (lang.upper(), lang.upper()))
+        lang_name = lang_names.get(lang, lang.upper())
 
         # Create subtitle entry - Stremio protocol format
         response_subs.append({
             "id": f"aav-{lang}-{real_id}",
             "url": subtitle_url,
-            "lang": lang_iso3,  # 3-letter ISO code (ara, tur, etc.)
-            "SubEncoding": "utf-8",
-            "SubFormat": "srt"
+            "lang": lang_iso3,
+            "name": f"Auto Arabic Vibe ({lang_name})"
         })
 
         print(f"[INFO] Returning {len(response_subs)} subtitle(s)")
@@ -340,6 +340,33 @@ def health_check():
         "translator": TRANSLATOR_AVAILABLE
     }
     return jsonify(status)
+
+
+@app.route('/test/<imdb_id>')
+def test_subtitle(imdb_id):
+    """Debug endpoint to test subtitle fetching"""
+    result = {
+        "imdb_id": imdb_id,
+        "sources_available": SOURCES_AVAILABLE,
+        "translator_available": TRANSLATOR_AVAILABLE,
+        "subtitle_found": False,
+        "subtitle_length": 0,
+        "error": None
+    }
+    
+    try:
+        if SOURCES_AVAILABLE and source_manager:
+            srt = source_manager.get_first_subtitle(imdb_id, "movie", None, None)
+            if srt:
+                result["subtitle_found"] = True
+                result["subtitle_length"] = len(srt)
+                result["preview"] = srt[:500] if len(srt) > 500 else srt
+        else:
+            result["error"] = "Sources not available"
+    except Exception as e:
+        result["error"] = str(e)
+    
+    return jsonify(result)
 
 
 # --- BOOTSTRAP ---
