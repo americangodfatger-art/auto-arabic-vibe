@@ -91,6 +91,28 @@ class SubDLSource(SubtitleSource):
     source_type = "api"
     
     def search(self, imdb_id: str, media_type: str, season: int = None, episode: int = None) -> List[Dict]:
+        # Try free API first (no key needed)
+        try:
+            url = f"https://api.subdl.com/auto/v1/subtitles?imdb_id={imdb_id}&languages=en&type={'episode' if media_type == 'series' else 'movie'}"
+            if media_type == "series" and season and episode:
+                url += f"&season_number={season}&episode_number={episode}"
+            
+            response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=6)
+            if response.status_code == 200:
+                data = response.json()
+                subs = data.get('subtitles', [])
+                if subs:
+                    return [{
+                        'source': self.name,
+                        'url': f"https://dl.subdl.com{sub.get('url')}" if sub.get('url', '').startswith('/') else sub.get('url'),
+                        'title': sub.get('release_name', 'SubDL'),
+                        'lang': 'en',
+                        'rating': 2
+                    } for sub in subs[:3] if sub.get('url')]
+        except Exception as e:
+            print(f"[{self.name}] Free API error: {e}")
+        
+        # Fallback to API key if available
         api_key = os.environ.get('SUBDL_API_KEY', '')
         if not api_key:
             return []
@@ -100,7 +122,7 @@ class SubDLSource(SubtitleSource):
             if media_type == "series" and season and episode:
                 url += f"&season_number={season}&episode_number={episode}"
             
-            response = requests.get(url, timeout=10)
+            response = requests.get(url, timeout=6)
             if response.status_code != 200:
                 return []
             
@@ -112,8 +134,8 @@ class SubDLSource(SubtitleSource):
                 'url': sub.get('url'),
                 'title': sub.get('release_name', 'SubDL'),
                 'lang': 'en',
-                'rating': 1
-            } for sub in subs[:5] if sub.get('url')]
+                'rating': 2
+            } for sub in subs[:3] if sub.get('url')]
         except Exception as e:
             print(f"[{self.name}] Error: {e}")
             return []
@@ -543,9 +565,9 @@ class SourceManager:
         print(f"[SourceManager] Initialized {len(self.sources)} subtitle sources")
     
     def search_all(self, imdb_id: str, media_type: str, season: int = None, episode: int = None, 
-                   max_workers: int = 3, max_results: int = 5) -> List[Dict]:
+                   max_workers: int = 5, max_results: int = 5) -> List[Dict]:
         """
-        Search sources in parallel for subtitles (optimized for speed)
+        Search sources in parallel for subtitles
         
         Args:
             imdb_id: IMDB ID
@@ -560,28 +582,33 @@ class SourceManager:
         """
         all_results = []
         
-        # Only use the fast/reliable sources
-        fast_sources = [s for s in self.sources if s.name in ['OpenSubtitles', 'WyzieSubsAPI', 'YIFY']]
+        # Use more sources for better coverage
+        active_sources = [s for s in self.sources if s.name in [
+            'OpenSubtitles', 'WyzieSubsAPI', 'YIFY', 'SubDL', 'Podnapisi'
+        ]]
         
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
                 executor.submit(source.search, imdb_id, media_type, season, episode): source
-                for source in fast_sources
+                for source in active_sources
             }
             
-            for future in as_completed(futures, timeout=8):
-                source = futures[future]
-                try:
-                    results = future.result(timeout=5)
-                    if results:
-                        all_results.extend(results)
-                        print(f"[{source.name}] Found {len(results)} subtitles")
-                    
-                    # Early exit if we have enough
-                    if len(all_results) >= max_results:
-                        break
-                except Exception as e:
-                    print(f"[{source.name}] Failed: {e}")
+            try:
+                for future in as_completed(futures, timeout=10):
+                    source = futures[future]
+                    try:
+                        results = future.result(timeout=6)
+                        if results:
+                            all_results.extend(results)
+                            print(f"[{source.name}] Found {len(results)} subtitles")
+                        
+                        # Early exit if we have enough
+                        if len(all_results) >= max_results:
+                            break
+                    except Exception as e:
+                        print(f"[{source.name}] Failed: {e}")
+            except Exception as e:
+                print(f"[SourceManager] Timeout: {e}")
         
         # Sort by rating
         all_results.sort(key=lambda x: x.get('rating', 0), reverse=True)
