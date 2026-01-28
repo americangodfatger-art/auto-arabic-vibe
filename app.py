@@ -40,7 +40,7 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 # --- CONSTANTS ---
 MANIFEST_ID = "org.stremio.auto-arabic-vibe"
 MANIFEST_NAME = "Auto Arabic Vibe"
-MANIFEST_VERSION = "1.5.0"
+MANIFEST_VERSION = "1.6.0"
 
 # Language code mapping (2-letter to 3-letter ISO 639-2)
 LANG_MAP = {
@@ -113,7 +113,7 @@ def get_manifest(config: dict = None) -> dict:
         "behaviorHints": {
             "configurable": True,
             "configurationRequired": False,
-            "configurationLocation": f"{get_base_url()}/configure"
+            "configurationURL": f"{get_base_url()}/configure"
         }
     }
 
@@ -161,7 +161,12 @@ def create_response(content: str, is_error: bool = False) -> Response:
 
     response = Response(encoded, status=200, mimetype='application/x-subrip')
     response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
     response.headers['Content-Disposition'] = 'inline; filename="subtitle.srt"'
+    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
     return response
 
 
@@ -173,13 +178,23 @@ def create_vtt_response(content: str, is_error: bool = False) -> Response:
     encoded = vtt.encode('utf-8-sig')
     r = Response(encoded, status=200, mimetype='text/vtt')
     r.headers['Access-Control-Allow-Origin'] = '*'
+    r.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+    r.headers['Access-Control-Allow-Headers'] = 'Content-Type'
     r.headers['Content-Disposition'] = 'inline; filename="subtitle.vtt"'
+    r.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    r.headers['Pragma'] = 'no-cache'
+    r.headers['Expires'] = '0'
     return r
 
 
 # --- ROUTES ---
 
 @app.route('/')
+def index():
+    """Redirect to configure page"""
+    return configure_page()
+
+
 @app.route('/configure')
 @app.route('/<config>/configure')
 def configure_page(config=None):
@@ -212,17 +227,21 @@ def manifest_dynamic(config):
 def _cors_preflight():
     r = make_response('', 204)
     r.headers['Access-Control-Allow-Origin'] = '*'
-    r.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
-    r.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    r.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+    r.headers['Access-Control-Allow-Headers'] = 'Content-Type, Accept, Origin'
     r.headers['Access-Control-Max-Age'] = '86400'
+    r.headers['Vary'] = 'Origin'
     return r
 
 
 def _add_no_cache_cors(resp):
     resp.headers['Access-Control-Allow-Origin'] = '*'
+    resp.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+    resp.headers['Access-Control-Allow-Headers'] = 'Content-Type'
     resp.headers['Content-Type'] = 'application/json; charset=utf-8'
     resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
     resp.headers['Pragma'] = 'no-cache'
+    resp.headers['Expires'] = '0'
     return resp
 
 
@@ -251,6 +270,18 @@ def subtitles_handler(config, content_type, id):
     video_id = request.args.get('videoId') or request.args.get('id') or id
     if isinstance(video_id, str) and video_id:
         id = video_id
+    
+    # Android TV may send extraArgs as JSON string
+    extra_args = request.args.get('extraArgs')
+    if extra_args:
+        try:
+            import json
+            extra = json.loads(extra_args)
+            if 'videoId' in extra:
+                id = extra['videoId']
+        except:
+            pass
+    
     print(f"[INFO] /subtitles called: type={content_type}, id={id}, config={config}")
     
     response_subs = []
@@ -313,12 +344,20 @@ def subtitles_handler(config, content_type, id):
         lang_name = lang_names.get(lang, lang.upper())
 
         # Create subtitle entry - Stremio protocol (id, url, lang required)
-        response_subs.append({
+        # Include langauge name in id for better Android TV compatibility
+        # Android TV needs proper encoding hints for non-Latin scripts
+        subtitle_entry = {
             "id": f"aav-{lang}-{real_id}",
             "url": subtitle_url,
             "lang": lang_iso3,
             "name": f"Auto Arabic Vibe ({lang_name})"
-        })
+        }
+        
+        # Add encoding hint for Android TV (helps with UTF-8 subtitles)
+        if lang in ['ar', 'fa', 'ur', 'hi', 'bn', 'zh-CN', 'ja', 'ko', 'ru']:
+            subtitle_entry["encoding"] = "UTF-8"
+        
+        response_subs.append(subtitle_entry)
 
         print(f"[INFO] Returning {len(response_subs)} subtitle(s)")
         return make_subtitle_response(response_subs)
@@ -333,9 +372,12 @@ def make_subtitle_response(subtitles):
     """Create proper JSON response for Stremio subtitle protocol"""
     resp = jsonify({"subtitles": subtitles})
     resp.headers['Access-Control-Allow-Origin'] = '*'
+    resp.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+    resp.headers['Access-Control-Allow-Headers'] = 'Content-Type'
     resp.headers['Content-Type'] = 'application/json; charset=utf-8'
     resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
     resp.headers['Pragma'] = 'no-cache'
+    resp.headers['Expires'] = '0'
     return resp
 
 
@@ -468,6 +510,26 @@ def test_subtitle(imdb_id):
         result["error"] = str(e)
     
     return jsonify(result)
+
+
+# --- ADDITIONAL ENDPOINTS FOR ANDROID TV COMPATIBILITY ---
+
+@app.route('/subtitles', methods=['GET', 'OPTIONS'])
+def subtitles_root():
+    """Handle root subtitles endpoint (some clients query this)"""
+    if request.method == 'OPTIONS':
+        return _cors_preflight()
+    # Return empty list for root query
+    return make_subtitle_response([])
+
+
+@app.after_request
+def after_request(response):
+    """Ensure all responses have proper CORS headers"""
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Accept, Origin')
+    response.headers.add('Access-Control-Allow-Methods', 'GET, OPTIONS')
+    return response
 
 
 # --- BOOTSTRAP ---
