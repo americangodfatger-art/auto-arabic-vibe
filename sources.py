@@ -194,10 +194,15 @@ class SubSourceSource(SubtitleSource):
     
     def search(self, imdb_id: str, media_type: str, season: int = None, episode: int = None) -> List[Dict]:
         try:
+            api_key = os.environ.get('SUBSOURCE_API_KEY', '')
+            headers = {'User-Agent': 'Mozilla/5.0'}
+            if api_key:
+                headers['Authorization'] = f'Bearer {api_key}'
+            
             # SubSource API endpoint
             url = f"https://api.subsource.net/api/searchMovie?imdb={imdb_id}"
             
-            response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=6)
+            response = requests.get(url, headers=headers, timeout=6)
             if response.status_code != 200:
                 return []
             
@@ -214,7 +219,7 @@ class SubSourceSource(SubtitleSource):
             if media_type == "series" and season:
                 sub_url += f"&season=season-{season}"
             
-            sub_response = requests.get(sub_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=6)
+            sub_response = requests.get(sub_url, headers=headers, timeout=6)
             if sub_response.status_code != 200:
                 return []
             
