@@ -187,6 +187,64 @@ class SubDBSource(SubtitleSource):
         return []
 
 
+class SubSourceSource(SubtitleSource):
+    """SubSource - Subtitle aggregator API"""
+    name = "SubSource"
+    source_type = "api"
+    
+    def search(self, imdb_id: str, media_type: str, season: int = None, episode: int = None) -> List[Dict]:
+        try:
+            # SubSource API endpoint
+            url = f"https://api.subsource.net/api/searchMovie?imdb={imdb_id}"
+            
+            response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=6)
+            if response.status_code != 200:
+                return []
+            
+            data = response.json()
+            if not data.get('found'):
+                return []
+            
+            movie_name = data.get('movie', {}).get('linkName', '')
+            if not movie_name:
+                return []
+            
+            # Get subtitles for this movie
+            sub_url = f"https://api.subsource.net/api/getMovie?movieName={movie_name}&langs=english"
+            if media_type == "series" and season:
+                sub_url += f"&season=season-{season}"
+            
+            sub_response = requests.get(sub_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=6)
+            if sub_response.status_code != 200:
+                return []
+            
+            sub_data = sub_response.json()
+            subs = sub_data.get('subs', [])
+            
+            results = []
+            for sub in subs[:5]:
+                if media_type == "series" and episode:
+                    # Filter by episode
+                    sub_name = sub.get('releaseName', '').lower()
+                    if f"e{episode:02d}" not in sub_name and f"e{episode}" not in sub_name:
+                        continue
+                
+                sub_id = sub.get('subId')
+                if sub_id:
+                    results.append({
+                        'source': self.name,
+                        'url': f"https://api.subsource.net/api/downloadSub/{sub_id}",
+                        'title': sub.get('releaseName', 'SubSource'),
+                        'lang': 'en',
+                        'rating': 2
+                    })
+            
+            return results[:3]
+        except Exception as e:
+            print(f"[{self.name}] Error: {e}")
+            return []
+
+
 class WyzieSubsSource(SubtitleSource):
     """WyzieSubsAPI - Open-source scraper"""
     name = "WyzieSubsAPI"
@@ -527,6 +585,7 @@ class SourceManager:
             # API Sources (8)
             OpenSubtitlesSource(),
             SubDLSource(),
+            SubSourceSource(),
             PodnapisiSource(),
             WyzieSubsSource(),
             SubDBSource(),
@@ -584,7 +643,7 @@ class SourceManager:
         
         # Use more sources for better coverage
         active_sources = [s for s in self.sources if s.name in [
-            'OpenSubtitles', 'WyzieSubsAPI', 'YIFY', 'SubDL', 'Podnapisi'
+            'OpenSubtitles', 'WyzieSubsAPI', 'YIFY', 'SubDL', 'Podnapisi', 'SubSource'
         ]]
         
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
