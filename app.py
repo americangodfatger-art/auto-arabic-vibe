@@ -21,11 +21,14 @@ except Exception as e:
     source_manager = None
 
 try:
-    from translator import translate_srt_content
+    from translator import translate_srt_content, batch_translate_srt
     TRANSLATOR_AVAILABLE = True
 except Exception as e:
     print(f"[CRITICAL] Failed to import translator: {e}")
     TRANSLATOR_AVAILABLE = False
+
+# Simple in-memory cache for translated subtitles
+subtitle_cache = {}
 
 
 app = Flask(__name__)
@@ -301,6 +304,12 @@ def stream_subtitle_handler(config, content_type, id):
         season = int(parts[1]) if len(parts) >= 2 else None
         episode = int(parts[2]) if len(parts) >= 3 else None
 
+        # Check cache first
+        cache_key = f"{real_id}:{season}:{episode}:{lang}"
+        if cache_key in subtitle_cache:
+            print(f"[INFO] Cache hit for {cache_key}")
+            return create_response(subtitle_cache[cache_key])
+
         # Get English subtitle
         if not SOURCES_AVAILABLE or not source_manager:
             return create_response("Subtitle sources unavailable", is_error=True)
@@ -312,12 +321,16 @@ def stream_subtitle_handler(config, content_type, id):
 
         print(f"[INFO] Got English subtitle ({len(english_srt)} chars), translating to {lang}")
 
-        # Translate to target language
+        # Translate to target language using batch translation (faster)
         if TRANSLATOR_AVAILABLE:
             try:
-                translated = translate_srt_content(english_srt, lang)
+                translated = batch_translate_srt(english_srt, lang)
                 if translated and len(translated) > 50:
                     print(f"[INFO] Translation successful ({len(translated)} chars)")
+                    # Cache the result (limit cache size)
+                    if len(subtitle_cache) > 100:
+                        subtitle_cache.clear()
+                    subtitle_cache[cache_key] = translated
                     return create_response(translated)
             except Exception as e:
                 print(f"[ERROR] Translation failed: {e}")
