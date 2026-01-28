@@ -40,7 +40,7 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 # --- CONSTANTS ---
 MANIFEST_ID = "org.stremio.auto-arabic-vibe"
 MANIFEST_NAME = "Auto Arabic Vibe"
-MANIFEST_VERSION = "1.4.1"
+MANIFEST_VERSION = "1.5.0"
 
 # Language code mapping (2-letter to 3-letter ISO 639-2)
 LANG_MAP = {
@@ -104,7 +104,9 @@ def get_manifest(config: dict = None) -> dict:
         "description": f"Auto-translate English subtitles to {lang_name} (Build: {timestamp}). Works on Android TV and all Stremio clients.",
         "logo": "https://i.imgur.com/QJmP3GF.png",
         "background": "https://i.imgur.com/Ke5D6l3.jpg",
-        "resources": ["subtitles"],
+        "resources": [
+            {"name": "subtitles", "types": ["movie", "series"], "idPrefixes": ["tt"]}
+        ],
         "types": ["movie", "series"],
         "catalogs": [],
         "idPrefixes": ["tt"],
@@ -114,6 +116,30 @@ def get_manifest(config: dict = None) -> dict:
             "configurationLocation": f"{get_base_url()}/configure"
         }
     }
+
+
+def srt_to_vtt(srt_content: str) -> str:
+    """Convert SRT content to WebVTT (for clients that prefer VTT)."""
+    if not srt_content or not srt_content.strip():
+        return "WEBVTT\n\n00:00:01.000 --> 00:00:05.000\nNo content.\n\n"
+    lines = srt_content.replace('\r\n', '\n').strip().split('\n')
+    out = ['WEBVTT', '']
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if re.match(r'^\d+$', line.strip()) and i + 2 < len(lines):
+            # timestamp line: 00:00:01,000 --> 00:00:05,000 -> 00:00:01.000 --> 00:00:05.000
+            ts = lines[i + 1].strip().replace(',', '.')
+            out.append(ts)
+            i += 2
+            text = []
+            while i < len(lines) and lines[i].strip():
+                text.append(lines[i])
+                i += 1
+            out.append('\n'.join(text))
+            out.append('')
+        i += 1
+    return '\n'.join(out).strip() + '\n\n'
 
 
 def create_response(content: str, is_error: bool = False) -> Response:
@@ -136,8 +162,19 @@ def create_response(content: str, is_error: bool = False) -> Response:
     response = Response(encoded, status=200, mimetype='application/x-subrip')
     response.headers['Access-Control-Allow-Origin'] = '*'
     response.headers['Content-Disposition'] = 'inline; filename="subtitle.srt"'
-    
     return response
+
+
+def create_vtt_response(content: str, is_error: bool = False) -> Response:
+    """Create WebVTT response for clients that prefer VTT."""
+    vtt = srt_to_vtt(content) if content else "WEBVTT\n\n00:00:01.000 --> 00:00:05.000\nNo content.\n\n"
+    if is_error:
+        vtt = "WEBVTT\n\n00:00:01.000 --> 00:00:05.000\n[Error] " + (content or "Unavailable") + "\n\n"
+    encoded = vtt.encode('utf-8-sig')
+    r = Response(encoded, status=200, mimetype='text/vtt')
+    r.headers['Access-Control-Allow-Origin'] = '*'
+    r.headers['Content-Disposition'] = 'inline; filename="subtitle.vtt"'
+    return r
 
 
 # --- ROUTES ---
@@ -151,38 +188,57 @@ def configure_page(config=None):
     return render_template('index.html')
 
 
-@app.route('/manifest.json')
+@app.route('/manifest.json', methods=['GET', 'OPTIONS'])
 def manifest_base():
     """Base Manifest - default Arabic translation"""
+    if request.method == 'OPTIONS':
+        return _cors_preflight()
     print("[INFO] /manifest.json called (default)")
     resp = jsonify(get_manifest())
-    resp.headers['Access-Control-Allow-Origin'] = '*'
-    resp.headers['Content-Type'] = 'application/json; charset=utf-8'
-    resp.headers['Cache-Control'] = 'public, max-age=300'
-    return resp
+    return _add_no_cache_cors(resp)
 
 
-@app.route('/<config>/manifest.json')
+@app.route('/<config>/manifest.json', methods=['GET', 'OPTIONS'])
 def manifest_dynamic(config):
     """Dynamic Manifest with configuration"""
+    if request.method == 'OPTIONS':
+        return _cors_preflight()
     print(f"[INFO] /manifest.json called with config={config}")
     cfg = decode_config(config)
     resp = jsonify(get_manifest(cfg))
+    return _add_no_cache_cors(resp)
+
+
+def _cors_preflight():
+    r = make_response('', 204)
+    r.headers['Access-Control-Allow-Origin'] = '*'
+    r.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+    r.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    r.headers['Access-Control-Max-Age'] = '86400'
+    return r
+
+
+def _add_no_cache_cors(resp):
     resp.headers['Access-Control-Allow-Origin'] = '*'
     resp.headers['Content-Type'] = 'application/json; charset=utf-8'
-    resp.headers['Cache-Control'] = 'public, max-age=300'
+    resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    resp.headers['Pragma'] = 'no-cache'
     return resp
 
 
-@app.route('/subtitles/<content_type>/<id>.json')
+@app.route('/subtitles/<content_type>/<id>.json', methods=['GET', 'OPTIONS'])
 def subtitles_base(content_type, id):
     """Base Subtitles - default Arabic"""
+    if request.method == 'OPTIONS':
+        return _cors_preflight()
     return subtitles_handler("", content_type, id)
 
 
-@app.route('/<config>/subtitles/<content_type>/<id>.json')
+@app.route('/<config>/subtitles/<content_type>/<id>.json', methods=['GET', 'OPTIONS'])
 def subtitles_dynamic(config, content_type, id):
     """Dynamic Subtitles with configuration"""
+    if request.method == 'OPTIONS':
+        return _cors_preflight()
     return subtitles_handler(config, content_type, id)
 
 
@@ -191,6 +247,10 @@ def subtitles_handler(config, content_type, id):
     CRITICAL: Subtitle Handler for Stremio
     Returns list of available subtitles - only real subtitles (no status entry)
     """
+    # Support videoId from extraArgs (e.g. Android TV / some clients)
+    video_id = request.args.get('videoId') or request.args.get('id') or id
+    if isinstance(video_id, str) and video_id:
+        id = video_id
     print(f"[INFO] /subtitles called: type={content_type}, id={id}, config={config}")
     
     response_subs = []
@@ -202,7 +262,7 @@ def subtitles_handler(config, content_type, id):
         lang_iso3 = LANG_MAP.get(lang, 'ara')
         
         # Parse IMDB ID - format: tt1234567 or tt1234567:1:2 (for series)
-        parts = id.split(':')
+        parts = str(id).split(':')
         real_id = parts[0]  # tt1234567
         season = int(parts[1]) if len(parts) >= 2 else None
         episode = int(parts[2]) if len(parts) >= 3 else None
@@ -274,27 +334,40 @@ def make_subtitle_response(subtitles):
     resp = jsonify({"subtitles": subtitles})
     resp.headers['Access-Control-Allow-Origin'] = '*'
     resp.headers['Content-Type'] = 'application/json; charset=utf-8'
-    resp.headers['Cache-Control'] = 'public, max-age=60'
+    resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    resp.headers['Pragma'] = 'no-cache'
     return resp
 
 
 @app.route('/stream/<content_type>/<id>/sub.srt')
 def stream_subtitle_base(content_type, id):
     """Stream subtitle - default Arabic"""
-    return stream_subtitle_handler(None, content_type, id)
+    return stream_subtitle_handler(None, content_type, id, fmt='srt')
 
 
 @app.route('/<config>/stream/<content_type>/<id>/sub.srt')
 def stream_subtitle_config(config, content_type, id):
     """Stream subtitle with config"""
-    return stream_subtitle_handler(config, content_type, id)
+    return stream_subtitle_handler(config, content_type, id, fmt='srt')
 
 
-def stream_subtitle_handler(config, content_type, id):
+@app.route('/stream/<content_type>/<id>/sub.vtt')
+def stream_subtitle_vtt_base(content_type, id):
+    """Stream subtitle as WebVTT"""
+    return stream_subtitle_handler(None, content_type, id, fmt='vtt')
+
+
+@app.route('/<config>/stream/<content_type>/<id>/sub.vtt')
+def stream_subtitle_vtt_config(config, content_type, id):
+    """Stream subtitle as WebVTT with config"""
+    return stream_subtitle_handler(config, content_type, id, fmt='vtt')
+
+
+def stream_subtitle_handler(config, content_type, id, fmt='srt'):
     """
-    CRITICAL: Stream the translated subtitle file
+    CRITICAL: Stream the translated subtitle file (SRT or WebVTT)
     """
-    print(f"[INFO] /stream called for {content_type} {id}")
+    print(f"[INFO] /stream called for {content_type} {id} fmt={fmt}")
     try:
         cfg = decode_config(config)
         lang = cfg.get('lang', 'ar')
@@ -304,20 +377,25 @@ def stream_subtitle_handler(config, content_type, id):
         season = int(parts[1]) if len(parts) >= 2 else None
         episode = int(parts[2]) if len(parts) >= 3 else None
 
+        def respond(srt_content: str, is_err: bool = False):
+            if fmt == 'vtt':
+                return create_vtt_response(srt_content, is_error=is_err)
+            return create_response(srt_content, is_error=is_err)
+
         # Check cache first
         cache_key = f"{real_id}:{season}:{episode}:{lang}"
         if cache_key in subtitle_cache:
             print(f"[INFO] Cache hit for {cache_key}")
-            return create_response(subtitle_cache[cache_key])
+            return respond(subtitle_cache[cache_key])
 
         # Get English subtitle
         if not SOURCES_AVAILABLE or not source_manager:
-            return create_response("Subtitle sources unavailable", is_error=True)
+            return respond("Subtitle sources unavailable", is_err=True)
 
         english_srt = source_manager.get_first_subtitle(real_id, content_type, season, episode)
 
         if not english_srt:
-            return create_response("No English subtitles found", is_error=True)
+            return respond("No English subtitles found", is_err=True)
 
         print(f"[INFO] Got English subtitle ({len(english_srt)} chars), translating to {lang}")
 
@@ -331,19 +409,19 @@ def stream_subtitle_handler(config, content_type, id):
                     if len(subtitle_cache) > 100:
                         subtitle_cache.clear()
                     subtitle_cache[cache_key] = translated
-                    return create_response(translated)
+                    return respond(translated)
             except Exception as e:
                 print(f"[ERROR] Translation failed: {e}")
                 traceback.print_exc()
 
         # Fallback to English if translation fails
         print("[WARN] Returning English subtitle as fallback")
-        return create_response(english_srt)
+        return respond(english_srt)
 
     except Exception as e:
         print(f"[ERROR] Stream handler failed: {e}")
         traceback.print_exc()
-        return create_response(f"Error: {e}", is_error=True)
+        return create_response(f"Error: {e}", is_error=True) if fmt == 'srt' else create_vtt_response(f"Error: {e}", is_error=True)
 
 @app.route('/health/status.srt')
 def status_subtitle_stream():
