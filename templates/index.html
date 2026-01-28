@@ -342,10 +342,11 @@
             <div class="tv-notice" style="background: rgba(233, 69, 96, 0.1); border: 1px solid var(--accent); border-radius: 12px; padding: 16px; margin-top: 20px;">
                 <div style="font-size: 14px; font-weight: 600; margin-bottom: 8px;">📺 Installing on TV or Phone?</div>
                 <div style="font-size: 12px; color: var(--text-secondary); line-height: 1.6;">
-                    1. Click "Install on Stremio" button above from this browser<br>
-                    2. The addon will sync automatically to your TV/Phone<br>
-                    3. Make sure you're logged into the same Stremio account
+                    1. Click "Install on Stremio" above from this browser<br>
+                    2. If subtitles don't show on TV, try <strong>Simple install</strong> below<br>
+                    3. Use the same Stremio account on all devices
                 </div>
+                <a href="#" id="simpleInstallBtn" style="display: inline-block; margin-top: 12px; font-size: 13px; color: var(--accent);">Simple install (for TV) →</a>
             </div>
 
             <div class="status-bar">
@@ -382,9 +383,9 @@
                 android: androidModeCheckbox.checked
             };
 
-            // Base64 encode the config
+            // URL-safe Base64 encode the config (for Android TV / Stremio path)
             const configJson = JSON.stringify(config);
-            const configBase64 = btoa(configJson);
+            const configBase64 = btoa(configJson).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 
             // Get current host
             const host = window.location.host;
@@ -405,6 +406,12 @@
             console.log('Config:', config);
             console.log('Base64:', configBase64);
             console.log('Install Link:', stremioLink);
+        }
+
+        // Simple install (no config in URL - better for Android TV)
+        const simpleInstallBtn = document.getElementById('simpleInstallBtn');
+        if (simpleInstallBtn) {
+            simpleInstallBtn.href = 'stremio://' + window.location.host + '/manifest.json';
         }
 
         // Update link on any change

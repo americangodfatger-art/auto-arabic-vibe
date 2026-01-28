@@ -53,12 +53,17 @@ LANG_MAP = {
 # --- HELPER FUNCTIONS ---
 
 def decode_config(config_b64: str) -> dict:
-    """Safely decode config"""
+    """Safely decode config - handles URL-safe base64 from install link and path encoding"""
     try:
-        if not config_b64:
+        if not config_b64 or not config_b64.strip():
             return {'lang': 'ar', 'android': True}
-        
-        json_str = base64.b64decode(config_b64).decode('utf-8')
+        s = config_b64.strip()
+        # Restore URL-safe base64 to standard: - -> +, _ -> /
+        s = s.replace('-', '+').replace('_', '/').replace(' ', '+')
+        pad = 4 - (len(s) % 4)
+        if pad != 4:
+            s += '=' * pad
+        json_str = base64.b64decode(s).decode('utf-8')
         return json.loads(json_str)
     except Exception:
         return {'lang': 'ar', 'android': True}
@@ -152,7 +157,8 @@ def manifest_base():
     print("[INFO] /manifest.json called (default)")
     resp = jsonify(get_manifest())
     resp.headers['Access-Control-Allow-Origin'] = '*'
-    resp.headers['Content-Type'] = 'application/json'
+    resp.headers['Content-Type'] = 'application/json; charset=utf-8'
+    resp.headers['Cache-Control'] = 'public, max-age=300'
     return resp
 
 
@@ -163,7 +169,8 @@ def manifest_dynamic(config):
     cfg = decode_config(config)
     resp = jsonify(get_manifest(cfg))
     resp.headers['Access-Control-Allow-Origin'] = '*'
-    resp.headers['Content-Type'] = 'application/json'
+    resp.headers['Content-Type'] = 'application/json; charset=utf-8'
+    resp.headers['Cache-Control'] = 'public, max-age=300'
     return resp
 
 
@@ -182,19 +189,11 @@ def subtitles_dynamic(config, content_type, id):
 def subtitles_handler(config, content_type, id):
     """
     CRITICAL: Subtitle Handler for Stremio
-    Returns list of available subtitles
+    Returns list of available subtitles - only real subtitles (no status entry)
     """
     print(f"[INFO] /subtitles called: type={content_type}, id={id}, config={config}")
     
-    # Persistent status subtitle for verification
-    status_sub = {
-        "id": "aav-status",
-        "url": f"{get_base_url()}/health/status.srt",
-        "lang": "ara",
-        "name": "✅ Addon Status: Active"
-    }
-    
-    response_subs = [status_sub]
+    response_subs = []
 
     try:
         # Decode config
@@ -253,7 +252,7 @@ def subtitles_handler(config, content_type, id):
         }
         lang_name = lang_names.get(lang, lang.upper())
 
-        # Create subtitle entry - Stremio protocol format
+        # Create subtitle entry - Stremio protocol (id, url, lang required)
         response_subs.append({
             "id": f"aav-{lang}-{real_id}",
             "url": subtitle_url,
@@ -271,10 +270,11 @@ def subtitles_handler(config, content_type, id):
 
 
 def make_subtitle_response(subtitles):
-    """Create proper JSON response for subtitles"""
+    """Create proper JSON response for Stremio subtitle protocol"""
     resp = jsonify({"subtitles": subtitles})
     resp.headers['Access-Control-Allow-Origin'] = '*'
-    resp.headers['Content-Type'] = 'application/json'
+    resp.headers['Content-Type'] = 'application/json; charset=utf-8'
+    resp.headers['Cache-Control'] = 'public, max-age=60'
     return resp
 
 
