@@ -25,7 +25,7 @@ class SubtitleSource:
     def download(self, url: str) -> Optional[str]:
         """Download subtitle content"""
         try:
-            response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=15)
+            response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=8)
             if response.status_code != 200:
                 return None
             
@@ -66,7 +66,7 @@ class OpenSubtitlesSource(SubtitleSource):
             else:
                 url = f"https://rest.opensubtitles.org/search/imdbid-{imdb_num}/sublanguageid-eng"
             
-            response = requests.get(url, headers={'User-Agent': 'TemporaryUserAgent'}, timeout=10)
+            response = requests.get(url, headers={'User-Agent': 'TemporaryUserAgent'}, timeout=5)
             
             if response.status_code != 200:
                 return []
@@ -79,7 +79,7 @@ class OpenSubtitlesSource(SubtitleSource):
                 'title': sub.get('SubFileName', 'OpenSubtitles'),
                 'lang': 'en',
                 'rating': float(sub.get('SubRating', 0))
-            } for sub in data[:5] if sub.get('SubDownloadLink')]
+            } for sub in data[:3] if sub.get('SubDownloadLink')]
         except Exception as e:
             print(f"[{self.name}] Error: {e}")
             return []
@@ -543,9 +543,9 @@ class SourceManager:
         print(f"[SourceManager] Initialized {len(self.sources)} subtitle sources")
     
     def search_all(self, imdb_id: str, media_type: str, season: int = None, episode: int = None, 
-                   max_workers: int = 5, max_results: int = 10) -> List[Dict]:
+                   max_workers: int = 3, max_results: int = 5) -> List[Dict]:
         """
-        Search all sources in parallel for subtitles
+        Search sources in parallel for subtitles (optimized for speed)
         
         Args:
             imdb_id: IMDB ID
@@ -560,16 +560,19 @@ class SourceManager:
         """
         all_results = []
         
+        # Only use the fast/reliable sources
+        fast_sources = [s for s in self.sources if s.name in ['OpenSubtitles', 'WyzieSubsAPI', 'YIFY']]
+        
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
                 executor.submit(source.search, imdb_id, media_type, season, episode): source
-                for source in self.sources
+                for source in fast_sources
             }
             
-            for future in as_completed(futures):
+            for future in as_completed(futures, timeout=8):
                 source = futures[future]
                 try:
-                    results = future.result(timeout=15)
+                    results = future.result(timeout=5)
                     if results:
                         all_results.extend(results)
                         print(f"[{source.name}] Found {len(results)} subtitles")
